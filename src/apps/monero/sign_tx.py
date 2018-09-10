@@ -1,39 +1,48 @@
 import gc
-import micropython
 
 from trezor import log
+from trezor.messages import MessageType
 
 
-async def sign_tx(ctx, msg, state):
+async def sign_tx(ctx, msg):
+    state = None
+
+    while True:
+        res, state = await sign_tx_step(ctx, msg, state)
+        if msg.final_msg:
+            break
+        msg = await ctx.call(res, MessageType.MoneroTransactionSignRequest)
+
+    return res
+
+
+async def sign_tx_step(ctx, msg, state):
     gc.threshold(gc.mem_free() // 4 + gc.mem_alloc())
-    log.debug(
-        __name__,
-        "############################ TSX. F: {} A: {} thr: {}".format(
-            gc.mem_free(), gc.mem_alloc(), gc.mem_free() // 4 + gc.mem_alloc()
-        ),
-    )
+    if __debug__:
+        log.debug(
+            __name__,
+            "f: %s a: %s thr: %s",
+            gc.mem_free(),
+            gc.mem_alloc(),
+            gc.mem_free() // 4 + gc.mem_alloc(),
+        )
+        log.debug(__name__, "s: %s", state)
     gc.collect()
-    micropython.mem_info()
 
     from apps.monero.protocol.tsx_sign import TsxSigner
 
-    log.debug(__name__, "TsxSigner. F: {} A: {}".format(gc.mem_free(), gc.mem_alloc()))
-    log.debug(__name__, "TsxState: %s", state.ctx_sign)
+    if __debug__:
+        log.debug(__name__, "f: %s a: %s", gc.mem_free(), gc.mem_alloc())
     gc.collect()
 
-    try:
-        signer = TsxSigner()
-        await signer.wake_up(ctx, state.ctx_sign, msg)
-        state.ctx_sign = None
+    signer = TsxSigner()
+    await signer.wake_up(ctx, state, msg)
+    del state
 
-        res = await signer.sign(msg)
-        gc.collect()
+    res = await signer.sign(msg)
+    gc.collect()
 
-        if not await signer.should_purge():
-            state.ctx_sign = await signer.state_save()
-        return res
+    if not await signer.should_purge():
+        state = await signer.state_save()
 
-    except Exception as e:
-        state.ctx_sign = None
-        log.error(__name__, "Tsx exception: %s %s", type(e), e)
-        raise
+    return res, state
